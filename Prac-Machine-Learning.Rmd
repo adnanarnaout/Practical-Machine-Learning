@@ -9,27 +9,104 @@ output: html_document
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
+# Load the Data
 ```{r}
-data <- d 
+library(caret)
+
+data <- read.csv("pml-training.csv")
+data <- data[,-1] #Removing the first column
+
+#Removing columns with more than 50% of NA values, as these features might be less informative
+
+threshold <- nrow(data) * 0.5
+data_cleaned <- data[, colSums(is.na(data)) < threshold]
+
+inTrain <- createDataPartition(data_cleaned$classe, p = 0.75, list = FALSE)
+
+training <- data_cleaned[inTrain,]
+testing <- data_cleaned[-inTrain,]
+dim(training); dim(testing) 
 ```
 
+# Preprocessing with PCA 
 
-## R Markdown
+```{r}
+set.seed(12345)
 
-This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+#Installing and loading the randomForest package
+library(randomForest)
 
-When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+#Convert categorical variables to dummy variables and exclude 'classe'
+dummy_vars <- model.matrix(~ . - classe, data = training)
 
-```{r cars}
-summary(cars)
+#Identify near-zero variance predictors
+nzv <- nearZeroVar(dummy_vars)
+
+#Remove near-zero variance predictors
+dummy_vars_clean <- dummy_vars[, -nzv]
+
+#Standardize the dummy variables
+preProcValues <- preProcess(dummy_vars_clean, method = c("center", "scale"))
+training_scaled <- predict(preProcValues, dummy_vars_clean)
+
+#Apply PCA to the standardized predictors
+pca_result <- prcomp(training_scaled, center = TRUE, scale. = TRUE)
+
+#Transform your training data into the principal component space
+training_pca <- as.data.frame(predict(pca_result, training_scaled))
+
+#Add the response variable 'classe' back to the PCA-transformed data
+training_pca$classe <- training$classe
+
 ```
 
-## Including Plots
+# Train the model using gradient boosting method (gbm)
 
-You can also embed plots, for example:
+```{r}
 
-```{r pressure, echo=FALSE}
-plot(pressure)
+#Set up cross-validation
+control <- trainControl(method = "cv", number = 3)
+
+set.seed(123)
+
+model <- train(classe ~ ., data = training_pca, method = "gbm", trControl = control)
+
+#Get predictions
+predictions <- predict(model, training_pca)
+
+#Convert both actual and predicted values to factors with the same levels
+actual_values <- factor(training_pca$classe, levels = levels(predictions))
+predicted_values <- factor(predictions, levels = levels(actual_values))
+
+#Compute the confusion matrix
+confusionMatrix(predicted_values, actual_values)
+
 ```
+# Test the model
 
-Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+```{r}
+
+testing_dummy_vars <- model.matrix(~ . - classe, data = testing)
+
+#Apply the PCA transformation to the testing data
+testing_pca_transformed <- predict(pca_result, testing_dummy_vars)
+
+#Convert to a data frame
+testing_pca_df <- as.data.frame(testing_pca_transformed)
+
+#Add the 'classe' variable back
+testing_pca_df$classe <- testing$classe
+
+# Make predictions
+test_predictions <- predict(model, testing_pca_df)
+
+# Convert the predictions and actual test values to factors with the same levels
+all_classes <- levels(factor(training$classe))
+test_predictions <- factor(test_predictions, levels = all_classes)
+actual_test_values <- factor(testing_pca_df$classe, levels = all_classes)
+
+#Compute the confusion matrix
+confusion_matrix <- confusionMatrix(test_predictions, actual_test_values)
+print(confusion_matrix)
+
+```
